@@ -150,11 +150,11 @@ def update_battery_leds():
     
     # Handle charging indicator (green LED)
     if charge_status:  # True when fully charged
-        green_led.value = True  # LED off when fully charged
+        green_led.value = False  # LED ON when fully charged
         charging_state = "Fully Charged"
     else:
-        green_led.value = False  # LED on while charging
-        charging_state = "Charging" if not green_led.value else "Not Charging"
+        green_led.value = True  # LED OFF while charging
+        charging_state = "Charging" if green_led.value else "Not Charging"
     
     # Handle low battery warning (red LED)
     if percent < 15 and not charge_status:  # Below 15% and not charging
