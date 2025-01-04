@@ -150,11 +150,11 @@ def update_battery_leds():
     
     # Handle charging indicator (green LED)
     if charge_status:  # True when fully charged
-        green_led.value = False  # LED ON when fully charged
+        green_led.value = True  # LED OFF when fully charged
         charging_state = "Fully Charged"
     else:
-        green_led.value = True  # LED OFF while charging
-        charging_state = "Charging" if green_led.value else "Not Charging"
+        green_led.value = False  # LED ON when charging
+        charging_state = "Charging"
     
     # Handle low battery warning (red LED)
     if percent < 15 and not charge_status:  # Below 15% and not charging
@@ -162,12 +162,12 @@ def update_battery_leds():
     else:
         red_led.value = True  # LED off when battery okay or charging
     
-    # More detailed debug output
+    # Debug output now correctly reflects the LED physical state
     print(f"Battery Status:")
     print(f"  Voltage: {volts:.4f}V")
     print(f"  Percent: {percent}%")
     print(f"  State: {charging_state}")
-    print(f"  LEDs: Green={'On' if not green_led.value else 'Off'}, Red={'On' if not red_led.value else 'Off'}")
+    print(f"  LEDs: Green={'Off' if green_led.value else 'On'}, Red={'Off' if red_led.value else 'On'}")
 
 def enter_sleep_mode():
     print("Entering sleep mode")
