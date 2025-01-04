@@ -1,13 +1,9 @@
-import os
 import time
 import board
 import digitalio
-import supervisor
-import storage
 import alarm
 from adafruit_lsm6ds.lsm6ds3 import LSM6DS3
 from busio import I2C
-import json
 import simpleio
 from adafruit_hid.mouse import Mouse
 from digitalio import DigitalInOut, Direction, Pull
@@ -19,7 +15,7 @@ from adafruit_ble.advertising.standard import ProvideServicesAdvertisement
 from adafruit_ble.services.standard.hid import HIDService
 from adafruit_ble.services.standard.device_info import DeviceInfoService
 
-# Configuration from code.py
+# Configuration
 config = {
     'name': 'Right Mouse Ring',
     'left_btn': board.D3,
@@ -71,7 +67,6 @@ scale_factor = 5  # Scale factor for mouse movement
 
 # Initialize variables
 filtered_x, filtered_y = 0, 0
-last_x, last_y = 0, 0
 last_time = time.monotonic()
 clock = 0
 
@@ -81,25 +76,11 @@ sleep_threshold = 300  # 5 minutes of inactivity
 
 def enter_sleep_mode():
     print("Entering sleep mode")
-    alarm.exit_and_deep_sleep_until_alarms()
-
-def load_calibration_data():
-    try:
-        with open("/calibration_data.json", "r") as file:
-            return json.load(file)
-    except (OSError, ValueError):
-        return {
-            "forward": [0.0, 0.0, 0.0],
-            "left": [0.0, 0.0, 0.0],
-            "right": [0.0, 0.0, 0.0],
-            "down": [0.0, 0.0, 0.0]
-        }
-
-def save_calibration_data(calibration_data):
-    storage.remount("/", readonly=False)
-    with open("/calibration_data.json", "w") as file:
-        json.dump(calibration_data, file)
-    storage.remount("/", readonly=True)
+    # Set up right button as wake source
+    wake_pin = alarm.pin.PinAlarm(pin=config['right_btn'], value=False, pull=True)
+    # Enter deep sleep until button press
+    print("Press right button to wake up")
+    alarm.exit_and_deep_sleep_until_alarms(wake_pin)
 
 def calibrate_sensor():
     print("Calibration mode. Follow the instructions...")
@@ -140,15 +121,15 @@ ble.name = config['name']
 # Setup mouse
 mouse = Mouse(hid.devices)
 
-# Load initial calibration
-calibration_data = load_calibration_data()
-
 # Debounce time
 DEBOUNCE_TIME = None
 debounce_delay = config['debounce_sleep']
 
 def get_delay_time(delay):
     return time.monotonic_ns() + (delay * 1000000000)
+
+# Long press threshold changed to 2 seconds
+LONG_PRESS_THRESHOLD = 2  # 2 seconds for sleep mode trigger
 
 print("Starting BLE advertising...")
 ble.start_advertising(advertisement, scan_response)
@@ -202,12 +183,26 @@ while True:
                 print("Left click")
                 last_movement_time = time.monotonic()
 
-        elif not right_button.value:  # Right click
+        elif not right_button.value:  # Right click or sleep mode
             if DEBOUNCE_TIME is None or DEBOUNCE_TIME < time.monotonic_ns():
                 DEBOUNCE_TIME = get_delay_time(debounce_delay)
+                press_start_time = time.monotonic()
                 mouse.press(Mouse.RIGHT_BUTTON)
+                
+                # Wait for button release or long press threshold
                 while not right_button.value:
-                    pass  # Wait for button release
+                    current_time = time.monotonic()
+                    if current_time - press_start_time >= LONG_PRESS_THRESHOLD:
+                        # Long press detected - enter sleep mode
+                        mouse.release(Mouse.RIGHT_BUTTON)  # Release button before sleep
+                        print("Long press detected - entering sleep mode")
+                        enter_sleep_mode()
+                        # After waking up
+                        print("Waking up from sleep mode")
+                        last_movement_time = time.monotonic()  # Reset activity timer
+                        break
+                
+                # If we get here, it was a short press
                 mouse.release(Mouse.RIGHT_BUTTON)
                 print("Right click")
                 last_movement_time = time.monotonic()
@@ -236,11 +231,6 @@ while True:
             print("Filtered x", steps(filtered_x))
             print("Filtered y", steps(filtered_y))
             clock = time.monotonic()
-
-        # Check for sleep
-        if time.monotonic() - last_movement_time > sleep_threshold:
-            print("Idle timeout reached, entering sleep mode")
-            enter_sleep_mode()
 
     print("Disconnected")
     ble.start_advertising(advertisement, scan_response)
