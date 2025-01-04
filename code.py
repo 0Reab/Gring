@@ -7,6 +7,7 @@ from busio import I2C
 import simpleio
 from adafruit_hid.mouse import Mouse
 from digitalio import DigitalInOut, Direction, Pull
+from seeed_xiao_nrf52840 import Battery
 
 # imports needed for bluetooth
 import adafruit_ble
@@ -43,6 +44,22 @@ scroll_down_button = digitalio.DigitalInOut(config['scrolldown_btn'])
 scroll_down_button.direction = digitalio.Direction.INPUT
 scroll_down_button.pull = digitalio.Pull.UP
 
+# LED setup
+blue_led = digitalio.DigitalInOut(board.LED_BLUE)
+blue_led.direction = digitalio.Direction.OUTPUT
+blue_led.value = True  # True = LED off, False = LED on
+
+green_led = digitalio.DigitalInOut(board.LED_GREEN)
+green_led.direction = digitalio.Direction.OUTPUT
+green_led.value = True  # True = LED off, False = LED on
+
+red_led = digitalio.DigitalInOut(board.LED_RED)
+red_led.direction = digitalio.Direction.OUTPUT
+red_led.value = True  # True = LED off, False = LED on
+
+# Battery setup
+battery = Battery()
+
 # Turn on IMU and wait 50 ms
 imu_pwr = digitalio.DigitalInOut(board.IMU_PWR)
 imu_pwr.direction = digitalio.Direction.OUTPUT
@@ -74,8 +91,90 @@ clock = 0
 last_movement_time = time.monotonic()
 sleep_threshold = 300  # 5 minutes of inactivity
 
+def get_batt_percent(volts):
+    # Returns battery capacity percent with interpolation
+    batt_table = {
+        4.26: 100,
+        4.22: 95,
+        4.19: 90,
+        4.15: 85,
+        4.11: 80,
+        4.07: 75,
+        4.03: 70,
+        4.00: 65,
+        3.96: 60,
+        3.92: 55,
+        3.88: 50,
+        3.84: 45,
+        3.80: 40,
+        3.77: 35,
+        3.73: 30,
+        3.69: 25,
+        3.65: 20,
+        3.61: 15,
+        3.58: 10,
+        3.54: 5,
+        3.50: 0
+    }
+    
+    # Find the two closest voltage points and interpolate
+    sorted_volts = sorted(batt_table.keys(), reverse=True)
+    
+    # If voltage is higher than our highest reference
+    if volts >= sorted_volts[0]:
+        return 100
+    
+    # If voltage is lower than our lowest reference
+    if volts <= sorted_volts[-1]:
+        return 0
+        
+    # Find the two voltage points we're between
+    for i in range(len(sorted_volts) - 1):
+        v_high = sorted_volts[i]
+        v_low = sorted_volts[i + 1]
+        
+        if v_low <= volts <= v_high:
+            percent_high = batt_table[v_high]
+            percent_low = batt_table[v_low]
+            
+            # Linear interpolation
+            percent = percent_low + (percent_high - percent_low) * (volts - v_low) / (v_high - v_low)
+            return round(percent)
+            
+    return 0
+
+def update_battery_leds():
+    volts = battery.voltage
+    percent = get_batt_percent(volts)
+    charge_status = battery.charge_status
+    
+    # Handle charging indicator (green LED)
+    if charge_status:  # True when fully charged
+        green_led.value = True  # LED off when fully charged
+        charging_state = "Fully Charged"
+    else:
+        green_led.value = False  # LED on while charging
+        charging_state = "Charging" if not green_led.value else "Not Charging"
+    
+    # Handle low battery warning (red LED)
+    if percent < 15 and not charge_status:  # Below 15% and not charging
+        red_led.value = not red_led.value  # Toggle LED state
+    else:
+        red_led.value = True  # LED off when battery okay or charging
+    
+    # More detailed debug output
+    print(f"Battery Status:")
+    print(f"  Voltage: {volts:.4f}V")
+    print(f"  Percent: {percent}%")
+    print(f"  State: {charging_state}")
+    print(f"  LEDs: Green={'On' if not green_led.value else 'Off'}, Red={'On' if not red_led.value else 'Off'}")
+
 def enter_sleep_mode():
     print("Entering sleep mode")
+    # Turn off all LEDs before sleep
+    blue_led.value = True
+    green_led.value = True
+    red_led.value = True
     # Set up right button as wake source
     wake_pin = alarm.pin.PinAlarm(pin=config['right_btn'], value=False, pull=True)
     # Enter deep sleep until button press
@@ -128,7 +227,7 @@ debounce_delay = config['debounce_sleep']
 def get_delay_time(delay):
     return time.monotonic_ns() + (delay * 1000000000)
 
-# Long press threshold changed to 2 seconds
+# Long press threshold
 LONG_PRESS_THRESHOLD = 2  # 2 seconds for sleep mode trigger
 
 print("Starting BLE advertising...")
@@ -140,8 +239,16 @@ while True:
         if not ble.advertising:
             ble.start_advertising(advertisement, scan_response)
         while not ble.connected:
-            pass
+            # Flash blue LED while waiting for connection
+            blue_led.value = False  # LED on
+            time.sleep(0.5)
+            blue_led.value = True   # LED off
+            time.sleep(0.5)
+            # Keep checking battery status while waiting
+            update_battery_leds()
+            
         print("Connected!")
+        blue_led.value = True  # LED off when connected
 
     while ble.connected:
         # Check for calibration (both buttons pressed)
@@ -226,8 +333,9 @@ while True:
             scroll_up_button.value and scroll_down_button.value):
             DEBOUNCE_TIME = None
 
-        # Debug output
+        # Update LEDs and debug output
         if (clock + 2) < time.monotonic():
+            update_battery_leds()
             print("Filtered x", steps(filtered_x))
             print("Filtered y", steps(filtered_y))
             clock = time.monotonic()
