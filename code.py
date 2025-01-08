@@ -70,17 +70,37 @@ time.sleep(0.05)
 i2c = I2C(board.IMU_SCL, board.IMU_SDA)
 sensor = LSM6DS3(i2c)
 
-# Mouse movement parameters
-mouse_min = -9
-mouse_max = 9
-step = (mouse_max - mouse_min) / 20.0
+# Mouse movement parameters - adjusted for better small movements
+mouse_min = -25  
+mouse_max = 25   
+step = (mouse_max - mouse_min) / 100.0  # Keep high granularity
 
 def steps(axis):
     return round((axis - mouse_min) / step)
 
 # Filter parameters
-alpha = 0.5  # Complementary filter parameter
-scale_factor = 5  # Scale factor for mouse movement
+alpha = 0.97  # Keep high smoothing
+base_scale = 1.2  # Increased base movement speed for better small movement detection
+
+def get_acceleration_factor(movement):
+    """Returns acceleration factor based on movement magnitude - more gradual curve"""
+    abs_movement = abs(movement)
+    if abs_movement < 2:
+        return 0.4  # Increased from 0.2 for better small movements
+    elif abs_movement < 4:
+        return 0.7  # Increased from 0.4 for better small movements
+    elif abs_movement < 8:
+        return 1.0  # Normal speed for medium movements
+    elif abs_movement < 12:
+        return 1.5  # Slightly reduced for smoother acceleration
+    else:
+        return 2.0  # Slightly reduced max speed for better control
+
+def significant_movement_detected(x, y):
+    movement_threshold = 0.15  # Reduced threshold significantly for better small movement detection
+    normalized_x = steps(x)
+    normalized_y = steps(y)
+    return abs(normalized_x) > movement_threshold or abs(normalized_y) > movement_threshold
 
 # Initialize variables
 filtered_x, filtered_y = 0, 0
@@ -200,12 +220,6 @@ def calibrate_sensor():
     filtered_y = sum_y / samples
     print(f"Calibration complete. Offsets: X={filtered_x:.2f}, Y={filtered_y:.2f}")
 
-def significant_movement_detected(x, y):
-    movement_threshold = 2
-    normalized_x = steps(x)
-    normalized_y = steps(y)
-    return abs(normalized_x) > movement_threshold or abs(normalized_y) > movement_threshold
-
 # Setup for HID and BLE
 hid = HIDService()
 device_info = DeviceInfoService(software_revision=adafruit_ble.__version__,
@@ -270,14 +284,41 @@ while True:
         filtered_x = alpha * (filtered_x + gyro_x * dt) + (1 - alpha) * accel_x
         filtered_y = alpha * (filtered_y + gyro_y * dt) + (1 - alpha) * accel_y
 
-        # Handle mouse movement
-        vertical_mov = simpleio.map_range(steps(filtered_x), 1.0, 20.0, 15.0, -15.0)
-        horizontal_mov = simpleio.map_range(steps(filtered_y), 20.0, 1.0, -15.0, 15.0)
+        # Handle mouse movement - adjusted ranges for finest control
+        vertical_mov = simpleio.map_range(steps(filtered_x), 1.0, 100.0, -25.0, 25.0)
+        horizontal_mov = simpleio.map_range(steps(filtered_y), 100.0, 1.0, -25.0, 25.0)
 
-        # Move mouse based on IMU
+        # Move mouse based on IMU - with enhanced acceleration
         if significant_movement_detected(filtered_x, filtered_y):
-            mouse.move(x=int(horizontal_mov), y=int(vertical_mov))
+            # Calculate acceleration factors
+            x_accel = get_acceleration_factor(horizontal_mov)
+            y_accel = get_acceleration_factor(vertical_mov)
+            
+            # Apply base scaling and acceleration
+            x_move = horizontal_mov * base_scale * x_accel
+            y_move = vertical_mov * base_scale * y_accel
+            
+            # Reduced dampening for small movements
+            if abs(x_move) < 2:
+                x_move *= 0.7  # Increased from 0.5
+            if abs(y_move) < 2:
+                y_move *= 0.7  # Increased from 0.5
+                
+            # More gradual exponential acceleration for large movements
+            if abs(x_move) > 15:
+                x_move = x_move * (1 + (abs(x_move) - 15) * 0.05)  # Reduced multiplier
+            if abs(y_move) > 15:
+                y_move = y_move * (1 + (abs(y_move) - 15) * 0.05)  # Reduced multiplier
+                
+            mouse.move(
+                x=int(x_move), 
+                y=int(y_move)
+            )
             last_movement_time = time.monotonic()
+
+            # Debug output for movement
+            if (clock + 2) < time.monotonic():
+                print(f"Movement: x={x_move:.2f} (accel={x_accel:.1f}), y={y_move:.2f} (accel={y_accel:.1f})")
 
         # Handle button inputs with debouncing
         if not left_button.value:  # Left click
